@@ -4,7 +4,7 @@ import { Itinerary, Phrase, FormData, Companion } from '../types';
 import { generateCombinedCompanionPrompt } from '../constants';
 import { calculateTotalCosts, addINRCostsToDailyPlans } from './currencyService';
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
+const ai = new GoogleGenAI({ apiKey: import.meta.env.VITE_GEMINI_API_KEY || '' });
 
 const itinerarySchema = {
   type: Type.OBJECT,
