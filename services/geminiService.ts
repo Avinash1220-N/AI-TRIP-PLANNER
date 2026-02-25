@@ -1,43 +1,50 @@
-
-import { GoogleGenAI, Type } from "@google/genai";
 import { Itinerary, Phrase, FormData, Companion } from '../types';
 import { generateCombinedCompanionPrompt } from '../constants';
 import { calculateTotalCosts, addINRCostsToDailyPlans } from './currencyService';
 
-const ai = new GoogleGenAI({ apiKey: import.meta.env.VITE_GEMINI_API_KEY || '' });
+/**
+ * Secure Gemini Service
+ * 
+ * ✅ API calls go through Vercel backend (/api/gemini)
+ * ✅ GEMINI_API_KEY never exposed to browser
+ * ✅ Safe for production
+ */
 
+const API_ENDPOINT = '/api/gemini';
+
+// Schema definitions (used by backend)
 const itinerarySchema = {
-  type: Type.OBJECT,
+  type: 'OBJECT',
   properties: {
-    tripTitle: { type: Type.STRING, description: "A creative and catchy title for the trip." },
-    destination: { type: Type.STRING, description: "The primary destination of the trip." },
-    duration: { type: Type.INTEGER, description: "The total number of days for the trip." },
+    tripTitle: { type: 'STRING', description: "A creative and catchy title for the trip." },
+    destination: { type: 'STRING', description: "The primary destination of the trip." },
+    duration: { type: 'INTEGER', description: "The total number of days for the trip." },
     dailyPlans: {
-      type: Type.ARRAY,
+      type: 'ARRAY',
       description: "An array of daily plans for the itinerary.",
       items: {
-        type: Type.OBJECT,
+        type: 'OBJECT',
         properties: {
-          day: { type: Type.INTEGER, description: "The day number (e.g., 1, 2, 3)." },
-          title: { type: Type.STRING, description: "A short, engaging title for the day's theme." },
-          summary: { type: Type.STRING, description: "A brief summary of the day's activities." },
-          estimatedDailyCost: { type: Type.INTEGER, description: "Estimated daily cost in USD for this day's activities, accommodation, food, and transportation." },
+          day: { type: 'INTEGER', description: "The day number (e.g., 1, 2, 3)." },
+          title: { type: 'STRING', description: "A short, engaging title for the day's theme." },
+          summary: { type: 'STRING', description: "A brief summary of the day's activities." },
+          estimatedDailyCost: { type: 'INTEGER', description: "Estimated daily cost in USD for this day's activities, accommodation, food, and transportation." },
           activities: {
-            type: Type.ARRAY,
+            type: 'ARRAY',
             description: "A list of activities for the day.",
             items: {
-              type: Type.OBJECT,
+              type: 'OBJECT',
               properties: {
-                name: { type: Type.STRING, description: "Name of the place or activity." },
-                description: { type: Type.STRING, description: "A detailed description of the activity and why it's recommended." },
-                type: { type: Type.STRING, enum: ['Attraction', 'Activity', 'Food', 'Accommodation'], description: "The category of the activity." },
-                estimatedCost: { type: Type.INTEGER, description: "Estimated cost in USD for this specific activity." },
+                name: { type: 'STRING', description: "Name of the place or activity." },
+                description: { type: 'STRING', description: "A detailed description of the activity and why it's recommended." },
+                type: { type: 'STRING', enum: ['Attraction', 'Activity', 'Food', 'Accommodation'], description: "The category of the activity." },
+                estimatedCost: { type: 'INTEGER', description: "Estimated cost in USD for this specific activity." },
                 location: {
-                  type: Type.OBJECT,
+                  type: 'OBJECT',
                   properties: {
-                    lat: { type: Type.NUMBER, description: "Latitude coordinate of the activity location." },
-                    lng: { type: Type.NUMBER, description: "Longitude coordinate of the activity location." },
-                    address: { type: Type.STRING, description: "Human-readable address of the activity location." }
+                    lat: { type: 'NUMBER', description: "Latitude coordinate of the activity location." },
+                    lng: { type: 'NUMBER', description: "Longitude coordinate of the activity location." },
+                    address: { type: 'STRING', description: "Human-readable address of the activity location." }
                   }
                 }
               },
@@ -50,12 +57,12 @@ const itinerarySchema = {
 };
 
 const phrasesSchema = {
-  type: Type.ARRAY,
+  type: 'ARRAY',
   items: {
-    type: Type.OBJECT,
+    type: 'OBJECT',
     properties: {
-      phrase: { type: Type.STRING, description: "The phrase in the requested foreign language." },
-      translation: { type: Type.STRING, description: "The English translation of the phrase." },
+      phrase: { type: 'STRING', description: "The phrase in the requested foreign language." },
+      translation: { type: 'STRING', description: "The English translation of the phrase." },
     },
   },
 };
@@ -99,22 +106,32 @@ export const generateItinerary = async (formData: FormData): Promise<Itinerary> 
   const systemInstruction = generateCombinedCompanionPrompt(formData.companions) + ` The entire response must be in ${formData.language}.`;
 
   try {
-    console.log('GeminiService: Starting API call with prompt:', prompt);
-    console.log('GeminiService: System instruction:', systemInstruction);
+    console.log('GeminiService: Starting secure backend API call');
     
-    const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
-      contents: prompt,
-      config: {
-        systemInstruction: systemInstruction,
-        responseMimeType: "application/json",
-        responseSchema: itinerarySchema,
+    const response = await fetch(API_ENDPOINT, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
       },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+        systemInstruction,
+        model: 'gemini-2.5-flash',
+        responseMimeType: 'application/json',
+        responseSchema: itinerarySchema,
+      }),
     });
 
-    const jsonStr = response.text.trim();
-    console.log('GeminiService: Raw API response:', jsonStr);
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(`Backend API error: ${error.message || response.statusText}`);
+    }
+
+    const data = await response.json();
+    console.log('GeminiService: Raw API response:', data);
     
+    // Extract text from response (Gemini API format)
+    const jsonStr = data?.candidates?.[0]?.content?.parts?.[0]?.text || '{}';
     const parsed = JSON.parse(jsonStr);
     console.log('GeminiService: Parsed response:', parsed);
     
@@ -232,86 +249,96 @@ export const generatePhrases = async (destination: string, language: string): Pr
 Please ensure all phrases are practical and commonly used by tourists.`;
 
   try {
-    const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
-      contents: prompt,
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: phrasesSchema,
+    const response = await fetch(API_ENDPOINT, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
       },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+        model: 'gemini-2.5-flash',
+        responseMimeType: 'application/json',
+        responseSchema: phrasesSchema,
+      }),
     });
 
-    const jsonStr = response.text.trim();
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(`Backend API error: ${error.message || response.statusText}`);
+    }
+
+    const data = await response.json();
+    const jsonStr = data?.candidates?.[0]?.content?.parts?.[0]?.text || '[]';
     const parsed = JSON.parse(jsonStr);
-    return parsed as Phrase[];
+    return parsed || [];
   } catch (error) {
-    console.error('Error generating phrases with Gemini:', error);
-    return []; // Return empty array if Gemini fails
+    console.error('GeminiService: Error generating phrases:', error);
+    return [];
   }
 };
 
 // Booking schema for hotels, flights, trains, etc.
 const bookingSchema = {
-  type: Type.OBJECT,
+  type: 'OBJECT',
   properties: {
     hotels: {
-      type: Type.ARRAY,
+      type: 'ARRAY',
       description: "Recommended hotels based on budget and preferences",
       items: {
-        type: Type.OBJECT,
+        type: 'OBJECT',
         properties: {
-          name: { type: Type.STRING, description: "Hotel name" },
-          location: { type: Type.STRING, description: "Hotel location/address" },
-          priceRange: { type: Type.STRING, description: "Price range per night (e.g., $100-200)" },
-          rating: { type: Type.NUMBER, description: "Hotel rating out of 5" },
-          amenities: { type: Type.ARRAY, items: { type: Type.STRING }, description: "List of amenities" },
-          bookingUrl: { type: Type.STRING, description: "Suggested booking platform or website" },
-          description: { type: Type.STRING, description: "Brief description of the hotel" }
+          name: { type: 'STRING', description: "Hotel name" },
+          location: { type: 'STRING', description: "Hotel location/address" },
+          priceRange: { type: 'STRING', description: "Price range per night (e.g., $100-200)" },
+          rating: { type: 'NUMBER', description: "Hotel rating out of 5" },
+          amenities: { type: 'ARRAY', items: { type: 'STRING' }, description: "List of amenities" },
+          bookingUrl: { type: 'STRING', description: "Suggested booking platform or website" },
+          description: { type: 'STRING', description: "Brief description of the hotel" }
         }
       }
     },
     flights: {
-      type: Type.ARRAY,
+      type: 'ARRAY',
       description: "Flight recommendations and booking tips",
       items: {
-        type: Type.OBJECT,
+        type: 'OBJECT',
         properties: {
-          route: { type: Type.STRING, description: "Flight route (e.g., NYC to Tokyo)" },
-          airlines: { type: Type.ARRAY, items: { type: Type.STRING }, description: "Recommended airlines" },
-          priceRange: { type: Type.STRING, description: "Expected price range" },
-          duration: { type: Type.STRING, description: "Flight duration" },
-          bookingTips: { type: Type.ARRAY, items: { type: Type.STRING }, description: "Booking tips and advice" },
-          bestTimeToBook: { type: Type.STRING, description: "When to book for best prices" }
+          route: { type: 'STRING', description: "Flight route (e.g., NYC to Tokyo)" },
+          airlines: { type: 'ARRAY', items: { type: 'STRING' }, description: "Recommended airlines" },
+          priceRange: { type: 'STRING', description: "Expected price range" },
+          duration: { type: 'STRING', description: "Flight duration" },
+          bookingTips: { type: 'ARRAY', items: { type: 'STRING' }, description: "Booking tips and advice" },
+          bestTimeToBook: { type: 'STRING', description: "When to book for best prices" }
         }
       }
     },
     transportation: {
-      type: Type.ARRAY,
+      type: 'ARRAY',
       description: "Local transportation options",
       items: {
-        type: Type.OBJECT,
+        type: 'OBJECT',
         properties: {
-          type: { type: Type.STRING, description: "Transportation type (train, bus, metro, etc.)" },
-          route: { type: Type.STRING, description: "Route description" },
-          cost: { type: Type.STRING, description: "Estimated cost" },
-          duration: { type: Type.STRING, description: "Travel duration" },
-          frequency: { type: Type.STRING, description: "How often it runs" },
-          bookingInfo: { type: Type.STRING, description: "How to book or purchase tickets" }
+          type: { type: 'STRING', description: "Transportation type (train, bus, metro, etc.)" },
+          route: { type: 'STRING', description: "Route description" },
+          cost: { type: 'STRING', description: "Estimated cost" },
+          duration: { type: 'STRING', description: "Travel duration" },
+          frequency: { type: 'STRING', description: "How often it runs" },
+          bookingInfo: { type: 'STRING', description: "How to book or purchase tickets" }
         }
       }
     },
     activities: {
-      type: Type.ARRAY,
+      type: 'ARRAY',
       description: "Bookable activities and experiences",
       items: {
-        type: Type.OBJECT,
+        type: 'OBJECT',
         properties: {
-          name: { type: Type.STRING, description: "Activity name" },
-          type: { type: Type.STRING, description: "Activity type (tour, museum, experience, etc.)" },
-          price: { type: Type.STRING, description: "Price range" },
-          duration: { type: Type.STRING, description: "Activity duration" },
-          bookingPlatform: { type: Type.STRING, description: "Where to book (Viator, GetYourGuide, etc.)" },
-          description: { type: Type.STRING, description: "Activity description" }
+          name: { type: 'STRING', description: "Activity name" },
+          type: { type: 'STRING', description: "Activity type (tour, museum, experience, etc.)" },
+          price: { type: 'STRING', description: "Price range" },
+          duration: { type: 'STRING', description: "Activity duration" },
+          bookingPlatform: { type: 'STRING', description: "Where to book (Viator, GetYourGuide, etc.)" },
+          description: { type: 'STRING', description: "Activity description" }
         }
       }
     }
@@ -319,7 +346,7 @@ const bookingSchema = {
 };
 
 export const generateBookingRecommendations = async (formData: FormData): Promise<any> => {
-  const prompt = `Generate comprehensive booking recommendations for a ${formData.tripType.toLowerCase()} trip from ${formData.departure} to ${formData.destination} for ${formData.duration} days with a ${formData.budget} budget for ${formData.numberOfMembers} person${formData.numberOfMembers > 1 ? 's' : ''}.
+  const prompt = `Generate comprehensive booking recommendations for a ${formData.tripType.toLowerCase()} trip to ${formData.destination} for ${formData.duration} days with a ${formData.budget} budget for ${formData.numberOfMembers} person${formData.numberOfMembers > 1 ? 's' : ''}.
 
 Please provide detailed booking information for:
 
@@ -329,8 +356,8 @@ Please provide detailed booking information for:
    - Include amenities, location, and booking platforms
    - Price should be per night for ${formData.numberOfMembers} person${formData.numberOfMembers > 1 ? 's' : ''}
 
-2. **FLIGHTS** (from ${formData.departure} to ${formData.destination}):
-   - Suggest airlines and routes for this specific journey
+2. **FLIGHTS**:
+   - Suggest airlines and routes
    - Provide booking tips and best times to book
    - Include price ranges and duration
    - Consider direct vs connecting flights
@@ -339,7 +366,7 @@ Please provide detailed booking information for:
    - Trains, buses, metro systems
    - Car rental options if applicable
    - Transportation passes or cards
-   - Airport transfers from ${formData.destination} airport to city center
+   - City transfer options
 
 4. **ACTIVITIES & EXPERIENCES** (in ${formData.destination}):
    - Bookable tours and activities
@@ -359,23 +386,31 @@ ${formData.tripType === 'Family' ? '- Prioritize family-friendly hotels, child-s
 ${formData.tripType === 'Friends Group' ? '- Include group accommodations, social activities, and shared transportation' : ''}
 ${formData.tripType === 'Business Trip' ? '- Focus on business hotels, convenient locations, and professional services' : ''}
 
-Please provide realistic prices, actual booking platforms, and practical booking advice for the journey from ${formData.departure} to ${formData.destination}.`;
+Please provide realistic prices, actual booking platforms, and practical booking advice.`;
 
   try {
-    console.log('GeminiService: Generating booking recommendations...');
+    console.log('GeminiService: Generating booking recommendations via backend...');
     
-    const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
-      contents: prompt,
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: bookingSchema,
+    const response = await fetch(API_ENDPOINT, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
       },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+        model: 'gemini-2.5-flash',
+        responseMimeType: 'application/json',
+        responseSchema: bookingSchema,
+      }),
     });
 
-    const jsonStr = response.text.trim();
-    console.log('GeminiService: Raw booking response:', jsonStr);
-    
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(`Backend API error: ${error.message || response.statusText}`);
+    }
+
+    const data = await response.json();
+    const jsonStr = data?.candidates?.[0]?.content?.parts?.[0]?.text || '{}';
     const parsed = JSON.parse(jsonStr);
     console.log('GeminiService: Parsed booking data:', parsed);
     
